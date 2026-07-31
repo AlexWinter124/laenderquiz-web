@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OAuth Callback - Winter Media Publisher</title>
+</head>
+<body>
+<h1>OAuth Callback</h1>
+<p>Copy the values below back into the setup script.</p>
+<pre id="out">Reading URL parameters...</pre>
+<script>
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get("code") || "(none)";
+  const state = params.get("state") || "(none)";
+  const error = params.get("error");
+  const errorDescription = params.get("error_description");
+  let text = "code=" + code + "\nstate=" + state;
+  if (error) {
+    text += "\nerror=" + error + "\nerror_description=" + (errorDescription || "");
+  }
+  document.getElementById("out").textContent = text;
+</script>
+</body>
+</html>
