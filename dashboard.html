@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Länder-Quiz – Manuelles Posten</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 640px; margin: 0 auto; padding: 20px; background: #15161A; color: #F0F0F0; }
+  h1 { font-size: 22px; }
+  .card { background: #22242A; border-radius: 14px; padding: 16px; margin-bottom: 16px; }
+  .meta { font-size: 13px; color: #999; margin-bottom: 10px; }
+  .video-link { display: inline-block; background: #E9A423; color: #15161A; font-weight: bold;
+                 padding: 10px 16px; border-radius: 10px; text-decoration: none; margin-bottom: 12px; }
+  .caption { white-space: pre-wrap; font-family: inherit; background: #15161A; padding: 12px;
+              border-radius: 8px; font-size: 14px; margin: 0 0 10px 0; }
+  .copy-btn { display: inline-block; background: #333640; color: #F0F0F0; border: none;
+               padding: 8px 14px; border-radius: 8px; font-size: 14px; cursor: pointer; }
+  .copy-btn.copied { background: #2E7D32; }
+  .empty { color: #999; }
+  #gate { margin-top: 40px; }
+  #gate input { width: 100%; box-sizing: border-box; padding: 12px; border-radius: 10px; border: 1px solid #333;
+                 background: #22242A; color: #F0F0F0; font-size: 16px; margin-bottom: 10px; }
+  #gate button { width: 100%; padding: 12px; border-radius: 10px; border: none; background: #E9A423;
+                  color: #15161A; font-weight: bold; font-size: 16px; cursor: pointer; }
+  #gate .error { color: #EF5350; font-size: 14px; margin-top: 10px; display: none; }
+  #content { display: none; }
+</style>
+</head>
+<body>
+<h1>Länder-Quiz – zum manuellen Posten (TikTok/Snapchat)</h1>
+
+<div id="gate">
+  <p style="color:#999; font-size:14px;">Code eingeben, um die Inhalte zu entschlüsseln.</p>
+  <input type="password" id="code-input" placeholder="Freischalt-Code" autocomplete="off">
+  <button id="unlock-btn">Freischalten</button>
+  <p class="error" id="gate-error">Falscher Code.</p>
+</div>
+
+<div id="content">
+  <p style="color:#999; font-size:13px;">Letzte 7 Tage. Video antippen zum Herunterladen, Kopieren-Button für die Caption.</p>
+  <div id="cards"></div>
+</div>
+
+<script>
+async function deriveKey(code) {
+  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(code));
+  return crypto.subtle.importKey('raw', hash, 'AES-GCM', false, ['decrypt']);
+}
+
+function b64ToBytes(b64) {
+  return Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+}
+
+async function tryUnlock(code) {
+  const resp = await fetch('dashboard-data.json?_=' + Date.now());
+  const { nonce, ciphertext } = await resp.json();
+  const key = await deriveKey(code);
+  const plainBuf = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: b64ToBytes(nonce) }, key, b64ToBytes(ciphertext)
+  );
+  return JSON.parse(new TextDecoder().decode(plainBuf));
+}
+
+function renderEntries(entries) {
+  const container = document.getElementById('cards');
+  if (entries.length === 0) {
+    container.innerHTML = '<p class="empty">Aktuell nichts zum manuellen Posten offen.</p>';
+    return;
+  }
+  for (const e of entries) {
+    const card = document.createElement('div');
+    card.className = 'card';
+
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.textContent = `${e.template} · ${e.countries.join(', ')} · ${e.lang.toUpperCase()} · ${e.created_at.slice(0, 16).replace('T', ' ')} UTC`;
+    card.appendChild(meta);
+
+    const link = document.createElement('a');
+    link.className = 'video-link';
+    link.href = e.video_url;
+    link.target = '_blank';
+    link.rel = 'noopener';
+    link.textContent = 'Video ansehen / herunterladen';
+    card.appendChild(link);
+
+    const captionEl = document.createElement('pre');
+    captionEl.className = 'caption';
+    captionEl.textContent = e.caption;
+    card.appendChild(captionEl);
+
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'copy-btn';
+    copyBtn.textContent = 'Caption kopieren';
+    copyBtn.onclick = async () => {
+      await navigator.clipboard.writeText(e.caption);
+      copyBtn.textContent = 'Kopiert ✓';
+      copyBtn.classList.add('copied');
+      setTimeout(() => { copyBtn.textContent = 'Caption kopieren'; copyBtn.classList.remove('copied'); }, 2000);
+    };
+    card.appendChild(copyBtn);
+
+    container.appendChild(card);
+  }
+}
+
+async function attemptCode(code, remember) {
+  try {
+    const entries = await tryUnlock(code);
+    if (remember) localStorage.setItem('dq_code', code);
+    document.getElementById('gate').style.display = 'none';
+    document.getElementById('content').style.display = 'block';
+    renderEntries(entries);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+document.getElementById('unlock-btn').onclick = async () => {
+  const code = document.getElementById('code-input').value.trim();
+  const ok = await attemptCode(code, true);
+  document.getElementById('gate-error').style.display = ok ? 'none' : 'block';
+};
+document.getElementById('code-input').addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter') document.getElementById('unlock-btn').click();
+});
+
+(async () => {
+  const saved = localStorage.getItem('dq_code');
+  if (saved) await attemptCode(saved, false);
+})();
+</script>
+</body>
+</html>
