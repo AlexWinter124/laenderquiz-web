@@ -14,9 +14,13 @@
                  padding: 10px 16px; border-radius: 10px; text-decoration: none; margin-bottom: 12px; }
   .caption { white-space: pre-wrap; font-family: inherit; background: #15161A; padding: 12px;
               border-radius: 8px; font-size: 14px; margin: 0 0 10px 0; }
+  .btn-row { display: flex; gap: 10px; }
   .copy-btn { display: inline-block; background: #333640; color: #F0F0F0; border: none;
                padding: 8px 14px; border-radius: 8px; font-size: 14px; cursor: pointer; }
   .copy-btn.copied { background: #2E7D32; }
+  .delete-btn { display: inline-block; background: #3A2222; color: #EF9A9A; border: none;
+                 padding: 8px 14px; border-radius: 8px; font-size: 14px; cursor: pointer; }
+  .delete-btn:hover { background: #4A2A2A; }
   .empty { color: #999; }
   #gate { margin-top: 40px; }
   #gate input { width: 100%; box-sizing: border-box; padding: 12px; border-radius: 10px; border: 1px solid #333;
@@ -38,18 +42,39 @@
 </div>
 
 <div id="content">
-  <p style="color:#999; font-size:13px;">Letzte 7 Tage. Video antippen zum Herunterladen, Kopieren-Button für die Caption.</p>
+  <p style="color:#999; font-size:13px;">Video antippen zum Herunterladen, Kopieren-Button für die Caption. Bleibt gespeichert, bis du einen Eintrag manuell löschst.</p>
   <div id="cards"></div>
 </div>
 
 <script>
+let _key = null;   // AES-Schluessel, nach Freischaltung im Speicher gehalten
+let _gh = null;    // { token, repo, data_path } - kommt aus der entschluesselten Nutzlast
+
 async function deriveKey(code) {
   const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(code));
-  return crypto.subtle.importKey('raw', hash, 'AES-GCM', false, ['decrypt']);
+  return crypto.subtle.importKey('raw', hash, 'AES-GCM', false, ['encrypt', 'decrypt']);
 }
 
 function b64ToBytes(b64) {
   return Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+}
+
+function bytesToB64(bytes) {
+  return btoa(String.fromCharCode(...bytes));
+}
+
+function utf8ToB64(str) {
+  return bytesToB64(new TextEncoder().encode(str));
+}
+
+async function encryptPayload(data) {
+  const nonce = crypto.getRandomValues(new Uint8Array(12));
+  const plaintext = new TextEncoder().encode(JSON.stringify(data));
+  const ciphertextBuf = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce }, _key, plaintext);
+  return JSON.stringify({
+    nonce: bytesToB64(nonce),
+    ciphertext: bytesToB64(new Uint8Array(ciphertextBuf)),
+  });
 }
 
 async function tryUnlock(code) {
@@ -59,11 +84,39 @@ async function tryUnlock(code) {
   const plainBuf = await crypto.subtle.decrypt(
     { name: 'AES-GCM', iv: b64ToBytes(nonce) }, key, b64ToBytes(ciphertext)
   );
+  _key = key;
   return JSON.parse(new TextDecoder().decode(plainBuf));
+}
+
+// Schreibt die (nach einem Loeschen aktualisierte) Eintragsliste
+// verschluesselt zurueck nach GitHub - GET fuer die aktuelle sha
+// (noetig zum Ueberschreiben einer bestehenden Datei), dann PUT.
+async function saveEntries(entries) {
+  const apiUrl = `https://api.github.com/repos/${_gh.repo}/contents/${_gh.data_path}`;
+  const headers = { 'Authorization': `Bearer ${_gh.token}`, 'Accept': 'application/vnd.github+json' };
+
+  const getResp = await fetch(apiUrl, { headers });
+  if (!getResp.ok) throw new Error('Konnte aktuelle Datei-Version nicht lesen (' + getResp.status + ')');
+  const { sha } = await getResp.json();
+
+  const payload = { entries, gh_token: _gh.token, repo: _gh.repo, data_path: _gh.data_path };
+  const encrypted = await encryptPayload(payload);
+
+  const putResp = await fetch(apiUrl, {
+    method: 'PUT',
+    headers: { ...headers, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      message: 'Dashboard-Eintrag geloescht (manuell)',
+      content: utf8ToB64(encrypted),
+      sha,
+    }),
+  });
+  if (!putResp.ok) throw new Error('Speichern fehlgeschlagen (' + putResp.status + ')');
 }
 
 function renderEntries(entries) {
   const container = document.getElementById('cards');
+  container.innerHTML = '';
   if (entries.length === 0) {
     container.innerHTML = '<p class="empty">Aktuell nichts zum manuellen Posten offen.</p>';
     return;
@@ -90,6 +143,9 @@ function renderEntries(entries) {
     captionEl.textContent = e.caption;
     card.appendChild(captionEl);
 
+    const btnRow = document.createElement('div');
+    btnRow.className = 'btn-row';
+
     const copyBtn = document.createElement('button');
     copyBtn.className = 'copy-btn';
     copyBtn.textContent = 'Caption kopieren';
@@ -99,19 +155,42 @@ function renderEntries(entries) {
       copyBtn.classList.add('copied');
       setTimeout(() => { copyBtn.textContent = 'Caption kopieren'; copyBtn.classList.remove('copied'); }, 2000);
     };
-    card.appendChild(copyBtn);
+    btnRow.appendChild(copyBtn);
 
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'delete-btn';
+    deleteBtn.textContent = 'Löschen';
+    deleteBtn.onclick = async () => {
+      if (!confirm('Diesen Eintrag (Video + Caption) wirklich endgültig löschen?')) return;
+      deleteBtn.disabled = true;
+      deleteBtn.textContent = 'Lösche …';
+      try {
+        const updated = window._entries.filter(x => x.id !== e.id);
+        await saveEntries(updated);
+        window._entries = updated;
+        renderEntries(updated);
+      } catch (err) {
+        alert('Löschen fehlgeschlagen: ' + err.message);
+        deleteBtn.disabled = false;
+        deleteBtn.textContent = 'Löschen';
+      }
+    };
+    btnRow.appendChild(deleteBtn);
+
+    card.appendChild(btnRow);
     container.appendChild(card);
   }
 }
 
 async function attemptCode(code, remember) {
   try {
-    const entries = await tryUnlock(code);
+    const payload = await tryUnlock(code);
+    _gh = { token: payload.gh_token, repo: payload.repo, data_path: payload.data_path };
+    window._entries = payload.entries;
     if (remember) localStorage.setItem('dq_code', code);
     document.getElementById('gate').style.display = 'none';
     document.getElementById('content').style.display = 'block';
-    renderEntries(entries);
+    renderEntries(payload.entries);
     return true;
   } catch (e) {
     return false;
