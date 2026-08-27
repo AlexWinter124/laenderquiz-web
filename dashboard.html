@@ -88,18 +88,31 @@ async function tryUnlock(code) {
   return JSON.parse(new TextDecoder().decode(plainBuf));
 }
 
-// Schreibt die (nach einem Loeschen aktualisierte) Eintragsliste
-// verschluesselt zurueck nach GitHub - GET fuer die aktuelle sha
-// (noetig zum Ueberschreiben einer bestehenden Datei), dann PUT.
-async function saveEntries(entries) {
+// Loescht EINEN Eintrag anhand seiner ID. Gefundener Bug (2026-08-27):
+// die alte Version baute die zu speichernde Liste aus window._entries
+// (Browser-Speicher vom Seiten-Laden) statt aus dem tatsaechlichen
+// Live-Stand - war zwischenzeitlich (z.B. durch einen automatischen
+// Post-Lauf) ein neuer Eintrag dazugekommen, hat das Loeschen den
+// stillschweigend mit ueberschrieben ("unzuverlaessig", kein Fehler,
+// einfach verschwundene Eintraege). Jetzt: GET liest content+sha
+// zusammen, wir entschluesseln den FRISCHEN Stand, entfernen nur die
+// eine ID daraus, verschluesseln neu, PUT mit derselben sha zurueck -
+// nie auf veraltete Browser-Daten verlassen.
+async function deleteEntry(id) {
   const apiUrl = `https://api.github.com/repos/${_gh.repo}/contents/${_gh.data_path}`;
   const headers = { 'Authorization': `Bearer ${_gh.token}`, 'Accept': 'application/vnd.github+json' };
 
   const getResp = await fetch(apiUrl, { headers });
   if (!getResp.ok) throw new Error('Konnte aktuelle Datei-Version nicht lesen (' + getResp.status + ')');
-  const { sha } = await getResp.json();
+  const { sha, content } = await getResp.json();
+  const raw = JSON.parse(atob(content.replace(/\n/g, '')));
+  const plainBuf = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: b64ToBytes(raw.nonce) }, _key, b64ToBytes(raw.ciphertext)
+  );
+  const current = JSON.parse(new TextDecoder().decode(plainBuf));
+  const freshEntries = current.entries.filter(x => x.id !== id);
 
-  const payload = { entries, gh_token: _gh.token, repo: _gh.repo, data_path: _gh.data_path };
+  const payload = { entries: freshEntries, gh_token: _gh.token, repo: _gh.repo, data_path: _gh.data_path };
   const encrypted = await encryptPayload(payload);
 
   const putResp = await fetch(apiUrl, {
@@ -112,6 +125,7 @@ async function saveEntries(entries) {
     }),
   });
   if (!putResp.ok) throw new Error('Speichern fehlgeschlagen (' + putResp.status + ')');
+  return freshEntries;
 }
 
 function renderEntries(entries) {
@@ -147,6 +161,7 @@ function renderEntries(entries) {
     btnRow.className = 'btn-row';
 
     const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
     copyBtn.className = 'copy-btn';
     copyBtn.textContent = 'Caption kopieren';
     copyBtn.onclick = async () => {
@@ -158,6 +173,7 @@ function renderEntries(entries) {
     btnRow.appendChild(copyBtn);
 
     const deleteBtn = document.createElement('button');
+    deleteBtn.type = 'button';
     deleteBtn.className = 'delete-btn';
     deleteBtn.textContent = 'Löschen';
     deleteBtn.onclick = async () => {
@@ -165,10 +181,18 @@ function renderEntries(entries) {
       deleteBtn.disabled = true;
       deleteBtn.textContent = 'Lösche …';
       try {
-        const updated = window._entries.filter(x => x.id !== e.id);
-        await saveEntries(updated);
+        const updated = await deleteEntry(e.id);
         window._entries = updated;
-        renderEntries(updated);
+        // NUR die eine Karte entfernen statt renderEntries(updated) (voller
+        // Neu-Aufbau aller Karten) - Gefundener Bug (2026-08-27): dadurch
+        // ruecken die restlichen Karten sofort nach oben nach, der Mauszeiger
+        // landet dann u.U. auf dem "Video ansehen"-Link (target=_blank) der
+        // nachgerueckten Karte -> es oeffnet sich ein neuer Tab. Card bleibt
+        // jetzt an Ort und Stelle weg, keine anderen Karten bewegen sich.
+        card.remove();
+        if (updated.length === 0) {
+          container.innerHTML = '<p class="empty">Aktuell nichts zum manuellen Posten offen.</p>';
+        }
       } catch (err) {
         alert('Löschen fehlgeschlagen: ' + err.message);
         deleteBtn.disabled = false;
