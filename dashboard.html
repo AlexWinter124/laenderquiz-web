@@ -160,26 +160,18 @@ function renderEntries(entries) {
     const btnRow = document.createElement('div');
     btnRow.className = 'btn-row';
 
-    const copyBtn = document.createElement('button');
-    copyBtn.type = 'button';
-    copyBtn.className = 'copy-btn';
-    copyBtn.textContent = 'Caption kopieren';
-    copyBtn.onclick = async () => {
-      await navigator.clipboard.writeText(e.caption);
-      copyBtn.textContent = 'Kopiert ✓';
-      copyBtn.classList.add('copied');
-      setTimeout(() => { copyBtn.textContent = 'Caption kopieren'; copyBtn.classList.remove('copied'); }, 2000);
-    };
-    btnRow.appendChild(copyBtn);
+    // Nutzerwunsch (2026-08-27): kein extra Loeschen-Klick+Bestaetigung
+    // mehr noetig - sobald BEIDE Signale da sind (Video angesehen/
+    // heruntergeladen UND Caption kopiert), gilt der Eintrag als erledigt
+    // und wird automatisch entfernt. Der manuelle Loeschen-Button bleibt
+    // als Ausnahme-Weg (z.B. Eintrag verwerfen, ohne ihn zu nutzen).
+    // "handled" verhindert einen doppelten Loesch-Versuch, falls beide
+    // Wege (auto + manuell) kurz hintereinander ausgeloest werden.
+    let viewed = false, copied = false, handled = false;
 
-    const deleteBtn = document.createElement('button');
-    deleteBtn.type = 'button';
-    deleteBtn.className = 'delete-btn';
-    deleteBtn.textContent = 'Löschen';
-    deleteBtn.onclick = async () => {
-      if (!confirm('Diesen Eintrag (Video + Caption) wirklich endgültig löschen?')) return;
-      deleteBtn.disabled = true;
-      deleteBtn.textContent = 'Lösche …';
+    async function removeCard() {
+      if (handled) return;
+      handled = true;
       try {
         const updated = await deleteEntry(e.id);
         window._entries = updated;
@@ -193,6 +185,44 @@ function renderEntries(entries) {
         if (updated.length === 0) {
           container.innerHTML = '<p class="empty">Aktuell nichts zum manuellen Posten offen.</p>';
         }
+      } catch (err) {
+        handled = false;
+        throw err;
+      }
+    }
+
+    function checkAutoRemove() {
+      if (viewed && copied) removeCard().catch(err => {
+        alert('Automatisches Entfernen fehlgeschlagen: ' + err.message + ' - bitte manuell mit "Löschen" versuchen.');
+      });
+    }
+
+    link.addEventListener('click', () => { viewed = true; checkAutoRemove(); });
+
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'copy-btn';
+    copyBtn.textContent = 'Caption kopieren';
+    copyBtn.onclick = async () => {
+      await navigator.clipboard.writeText(e.caption);
+      copyBtn.textContent = 'Kopiert ✓';
+      copyBtn.classList.add('copied');
+      setTimeout(() => { copyBtn.textContent = 'Caption kopieren'; copyBtn.classList.remove('copied'); }, 2000);
+      copied = true;
+      checkAutoRemove();
+    };
+    btnRow.appendChild(copyBtn);
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.type = 'button';
+    deleteBtn.className = 'delete-btn';
+    deleteBtn.textContent = 'Löschen';
+    deleteBtn.onclick = async () => {
+      if (!confirm('Diesen Eintrag (Video + Caption) wirklich endgültig löschen?')) return;
+      deleteBtn.disabled = true;
+      deleteBtn.textContent = 'Lösche …';
+      try {
+        await removeCard();
       } catch (err) {
         alert('Löschen fehlgeschlagen: ' + err.message);
         deleteBtn.disabled = false;
