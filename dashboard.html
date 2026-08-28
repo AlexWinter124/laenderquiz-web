@@ -78,7 +78,18 @@ async function encryptPayload(data) {
 }
 
 async function tryUnlock(code) {
-  const resp = await fetch('dashboard-data.json?_=' + Date.now());
+  // Gefundener Bug (2026-08-27): "geloeschte Eintraege kommen beim
+  // Neuladen wieder" - GitHub Pages baut die Seite nach jedem Push mit
+  // spuerbarer Verzoegerung neu (kein simples CDN-Cache-Problem, das
+  // laesst sich nicht per Cache-Busting-Query-Parameter umgehen). Fix:
+  // direkt gegen die Contents-API lesen statt gegen die verzoegert
+  // ausgelieferte Pages-Datei - die spiegelt den echten git-Stand ohne
+  // Build-Schritt, oeffentliches Repo braucht dafuer keine Auth (haben
+  // an dieser Stelle vor dem Entschluesseln ohnehin noch keinen Token).
+  const resp = await fetch(
+    'https://api.github.com/repos/AlexWinter124/laenderquiz-web/contents/dashboard-data.json',
+    { headers: { 'Accept': 'application/vnd.github.raw' }, cache: 'no-store' },
+  );
   const { nonce, ciphertext } = await resp.json();
   const key = await deriveKey(code);
   const plainBuf = await crypto.subtle.decrypt(
